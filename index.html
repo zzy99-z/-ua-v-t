@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Duck Race Real-time - Final Fix</title>
+    <script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-database.js"></script>
+    <style>
+        :root { --p: #ffcc00; --bg: #e0f2f1; }
+        body { font-family: 'Segoe UI', sans-serif; background: var(--bg); display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
+        .card { background: white; padding: 25px; border-radius: 20px; box-shadow: 0 8px 20px rgba(0,0,0,0.1); width: 90%; max-width: 450px; text-align: center; }
+        input { width: 100%; padding: 12px; margin: 10px 0; border: 2px solid #ddd; border-radius: 10px; box-sizing: border-box; }
+        button { width: 100%; padding: 12px; border: none; border-radius: 10px; font-weight: bold; cursor: pointer; margin-top: 10px; transition: 0.2s; }
+        button:active { transform: scale(0.98); }
+        .btn-main { background: var(--p); color: #333; }
+        .btn-join { background: #4db6ac; color: white; }
+        .hidden { display: none !important; }
+        
+        /* Đường đua chuyên nghiệp */
+        .track-box { position: relative; background: #fff; border: 4px solid #333; height: 320px; margin: 20px 0; overflow: hidden; border-radius: 10px; }
+        .duck { position: absolute; left: 0; font-size: 40px; transition: left 0.1s linear; display: flex; flex-direction: column; align-items: center; width: 60px; }
+        .duck-label { font-size: 10px; background: rgba(0,0,0,0.7); color: white; padding: 2px 5px; border-radius: 5px; margin-bottom: -5px; white-space: nowrap; }
+        .finish-line { position: absolute; right: 70px; top: 0; bottom: 0; width: 30px; background: repeating-linear-gradient(0deg, #000, #000 10px, #fff 10px, #fff 20px); border-left: 2px solid #000; }
+        .winner-pop { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: gold; padding: 20px; border-radius: 15px; border: 3px solid #333; z-index: 100; box-shadow: 0 0 50px rgba(0,0,0,0.3); }
+    </style>
+</head>
+<body>
+
+    <div id="app" class="card">
+        <div id="screen-login">
+            <h1 style="font-size: 50px; margin: 0;">🦆</h1>
+            <h2>VỊT ĐUA ONLINE</h2>
+            <input type="text" id="name-input" placeholder="Nhập tên của bạn...">
+            <button class="btn-main" onclick="handleLogin()">BẮT ĐẦU</button>
+        </div>
+
+        <div id="screen-lobby" class="hidden">
+            <h3>Xin chào, <span id="hello-name" style="color: #00796b;"></span>!</h3>
+            <button class="btn-main" onclick="initRoom(true)">TẠO PHÒNG MỚI</button>
+            <div style="margin: 20px 0; border-top: 1px solid #ddd; padding-top: 20px;">
+                <input type="text" id="room-code-input" placeholder="Nhập mã phòng...">
+                <button class="btn-join" onclick="initRoom(false)">VÀO PHÒNG</button>
+            </div>
+        </div>
+
+        <div id="screen-room" class="hidden">
+            <div style="background: #fff9c4; padding: 15px; border-radius: 10px; border: 2px dashed #fbc02d;">
+                MÃ PHÒNG: <b id="display-room-id" style="font-size: 24px; letter-spacing: 3px;"></b>
+            </div>
+            <p>Người chơi đang đợi:</p>
+            <div id="player-list" style="text-align: left; background: #f9f9f9; padding: 10px; border-radius: 10px; min-height: 50px;"></div>
+            <button id="start-btn" class="btn-main hidden" onclick="startRaceSignal()" style="background: #2ecc71; color: white;">BẮT ĐẦU ĐUA</button>
+            <p id="wait-msg" style="color: #666; font-style: italic;">Đang chờ chủ phòng...</p>
+        </div>
+
+        <div id="screen-race" class="hidden" style="max-width: 800px; width: 100%;">
+            <h2 id="race-timer">30</h2>
+            <div class="track-box" id="track-container">
+                <div class="finish-line"></div>
+            </div>
+            <div id="winner-box" class="winner-pop hidden">
+                <h2 style="margin: 0;">🏆 CHIẾN THẮNG!</h2>
+                <h3 id="winner-name">---</h3>
+                <button onclick="location.reload()">CHƠI LẠI</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Cấu hình Firebase công khai để test (Lưu ý: Sau này nên tự tạo Firebase riêng của bạn)
+        const firebaseConfig = { databaseURL: "https://duck-race-demo-default-rtdb.firebaseio.com" };
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.database();
+
+        let myName = "";
+        let myId = "";
+        let roomId = "";
+        let isHost = false;
+        let raceInterval = null;
+
+        function handleLogin() {
+            myName = document.getElementById('name-input').value.trim();
+            if (!myName) return alert("Cho xin cái tên đi Quỳnh!");
+            document.getElementById('screen-login').classList.add('hidden');
+            document.getElementById('screen-lobby').classList.remove('hidden');
+            document.getElementById('hello-name').innerText = myName;
+        }
+
+        function initRoom(hostMode) {
+            isHost = hostMode;
+            if (isHost) {
+                roomId = Math.random().toString(36).substring(2, 7).toUpperCase();
+            } else {
+                roomId = document.getElementById('room-code-input').value.trim().toUpperCase();
+            }
+            if (!roomId) return alert("Nhập mã phòng!");
+
+            // Đăng ký người chơi với ID ngẫu nhiên (tránh trùng tên)
+            const playerRef = db.ref(`rooms/${roomId}/players`).push();
+            myId = playerRef.key;
+            playerRef.set({ name: myName, pos: 0 });
+            playerRef.onDisconnect().remove();
+
+            setupRoomListeners();
+        }
+
+        function setupRoomListeners() {
+            document.getElementById('screen-lobby').classList.add('hidden');
+            document.getElementById('screen-room').classList.remove('hidden');
+            document.getElementById('display-room-id').innerText = roomId;
+
+            if (isHost) {
+                document.getElementById('start-btn').classList.remove('hidden');
+                document.getElementById('wait-msg').classList.add('hidden');
+                db.ref(`rooms/${roomId}/status`).set({ state: 'waiting' });
+            }
+
+            // Lắng nghe danh sách người chơi
+            db.ref(`rooms/${roomId}/players`).on('value', snap => {
+                const players = snap.val() || {};
+                const listDiv = document.getElementById('player-list');
+                listDiv.innerHTML = Object.values(players).map(p => `<div>🦆 <b>${p.name}</b></div>`).join('');
+            });
+
+            // Lắng nghe trạng thái game
+            db.ref(`rooms/${roomId}/status`).on('value', snap => {
+                const status = snap.val();
+                if (!status) return;
+                if (status.state === 'racing') startRaceUI();
+                if (status.state === 'finished') showWinner(status.winnerName);
+            });
+        }
+
+        function startRaceSignal() {
+            db.ref(`rooms/${roomId}/status`).update({ state: 'racing', startTime: Date.now() });
+        }
+
+        function startRaceUI() {
+            document.getElementById('screen-room').classList.add('hidden');
+            document.getElementById('screen-race').classList.remove('hidden');
+
+            const track = document.getElementById('track-container');
+            db.ref(`rooms/${roomId}/players`).once('value', snap => {
+                const players = snap.val();
+                Object.entries(players).forEach(([id, data], i) => {
+                    const d = document.createElement('div');
+                    d.className = 'duck';
+                    d.id = `duck-${id}`;
+                    d.style.top = (i * 65 + 20) + 'px';
+                    d.innerHTML = `<span class="duck-label">${data.name}</span>🦆`;
+                    track.appendChild(d);
+                });
+            });
+
+            // Lắng nghe vị trí để cập nhật DOM (Dành cho tất cả mọi người)
+            db.ref(`rooms/${roomId}/players`).on('value', snap => {
+                const players = snap.val();
+                if (!players) return;
+                Object.entries(players).forEach(([id, data]) => {
+                    const el = document.getElementById(`duck-${id}`);
+                    if (el) el.style.left = data.pos + 'px';
+                });
+            });
+
+            // Nếu là Chủ phòng: Bắt đầu tính toán và gửi vị trí lên Firebase
+            if (isHost) runHostLogic();
+        }
+
+        function runHostLogic() {
+            const finishLine = document.getElementById('track-container').offsetWidth - 120;
+            let timer = 30;
+            
+            raceInterval = setInterval(() => {
+                timer -= 0.1;
+                document.getElementById('race-timer').innerText = Math.ceil(timer);
+
+                db.ref(`rooms/${roomId}/players`).once('value', snap => {
+                    const players = snap.val();
+                    let winnerFound = null;
+
+                    Object.entries(players).forEach(([id, data]) => {
+                        let newPos = data.pos + (Math.random() * 8); // Tốc độ ngẫu nhiên do Host quyết định
+                        db.ref(`rooms/${roomId}/players/${id}`).update({ pos: newPos });
+                        
+                        if (newPos >= finishLine && !winnerFound) {
+                            winnerFound = data.name;
+                        }
+                    });
+
+                    if (winnerFound || timer <= 0) {
+                        clearInterval(raceInterval);
+                        db.ref(`rooms/${roomId}/status`).update({ 
+                            state: 'finished', 
+                            winnerName: winnerFound || "Không ai thắng!" 
+                        });
+                    }
+                });
+            }, 100);
+        }
+
+        function showWinner(name) {
+            document.getElementById('winner-box').classList.remove('hidden');
+            document.getElementById('winner-name').innerText = name;
+        }
+    </script>
+</body>
+</html>
